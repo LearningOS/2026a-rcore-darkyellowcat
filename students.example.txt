@@ -1,0 +1,2 @@
+# Copy this file to students.txt and enter one GitHub login per line.
+# Use account logins, not display names, email addresses or OpenCamp nicknames.
