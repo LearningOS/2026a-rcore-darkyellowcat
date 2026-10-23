@@ -1,0 +1,25 @@
+name: Check course automation
+
+on:
+  push:
+    paths: ['.github/**', 'enroll.py', 'course.json']
+  pull_request:
+    paths: ['.github/**', 'enroll.py', 'course.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automation-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s .github/tests -v
