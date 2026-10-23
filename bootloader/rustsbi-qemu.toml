@@ -1,0 +1,19 @@
+# Build from the upstream revision below with dependency_lock copied to Cargo.lock.
+# Jump mode preserves os/Makefile's loader address and requires no custom DTB.
+project = "RustSBI Prototyper"
+rustsbi_version = "0.4.1"
+repository = "https://github.com/rustsbi/rustsbi"
+tag = "v0.4.1"
+revision = "1e10645e9a3cc6230988b037df506f97310555b7"
+toolchain = "nightly-2026-05-11"
+target = "riscv64gc-unknown-none-elf"
+dependency_lock = "rustsbi-Cargo.lock"
+dependency_lock_sha256 = "ed367115254f92bfa31883e42913986eb262148c4508e639abed29fbbf2559e5"
+build_command = "cargo prototyper --jump"
+build_output = "target/riscv64gc-unknown-none-elf/release/rustsbi-prototyper-jump.bin"
+mode = "jump"
+firmware_address = 0x80000000
+kernel_address = 0x80200000
+sha256 = "9986e71c41601d0d1fdc329c7eb789e25c1f7cb61ef8144f7aab0610e7e6f33c"
+license = "MIT"
+license_file = "LICENSE-RustSBI"
