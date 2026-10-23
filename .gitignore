@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.pyc
+tmp/
+rank/
+ci-user/
+user/
+target/
+Cargo.lock
+os/src/link_app.S
+os/last-*
+os/.gdb_history
+os/vendor/
+*.bak
+students.txt
