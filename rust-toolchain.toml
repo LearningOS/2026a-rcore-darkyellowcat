@@ -1,0 +1,6 @@
+[toolchain]
+profile = "minimal"
+# Keep the kernel and rCore-Tutorial-Test on the same dated compiler.
+channel = "nightly-2024-05-02"
+components = ["rust-src", "llvm-tools-preview", "rustfmt", "clippy"]
+targets = ["riscv64gc-unknown-none-elf"]

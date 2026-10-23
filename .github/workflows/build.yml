@@ -1,0 +1,84 @@
+name: rCore 2026a grading
+
+on:
+  push:
+    branches: [ch3, ch4, ch5, ch6, ch8]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OSCAMP_COURSE_ID: '2073'
+  CARGO_TERM_COLOR: never
+  TZ: Asia/Shanghai
+
+jobs:
+  basic-test:
+    name: Test chapter and reports
+    if: >-
+      !startsWith(github.event.repository.name, 'preparing-') &&
+      contains(fromJSON('["ch3","ch4","ch5","ch6","ch8"]'), github.ref_name) &&
+      (github.repository == 'LearningOS/2026a-rcore' || vars.STUDENT_GITHUB != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      points: ${{ steps.grade.outputs.points }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare QEMU 8.2 and the course Rust toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-misc
+          python3 - <<'PY'
+          import subprocess
+          version = subprocess.check_output(['qemu-system-riscv64', '--version'], text=True)
+          print(version, end='')
+          if not version.startswith('QEMU emulator version 8.2.'):
+              raise SystemExit('This course requires QEMU 8.2.x.')
+          PY
+          rustup toolchain install nightly-2024-05-02 --profile minimal \
+            --component rust-src,llvm-tools-preview \
+            --target riscv64gc-unknown-none-elf
+          cargo +nightly-2024-05-02 install cargo-binutils --version 0.4.0 --locked
+      - name: Run official rCore checker
+        id: grade
+        run: python3 -u .github/scripts/rcore_grade.py
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rcore-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tmp/rcore-grade.log
+            tmp/rcore-result.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: Save progress and upload score
+    needs: basic-test
+    # The template only tests. Each student repository has a maintainer-set login.
+    if: >-
+      !startsWith(github.event.repository.name, 'preparing-') &&
+      github.repository_owner == 'LearningOS' &&
+      vars.STUDENT_GITHUB != '' &&
+      github.actor == vars.STUDENT_GITHUB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: opencamp-course-2073-report
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Save passed chapter and upload cumulative score
+        env:
+          OSCAMP_2026A_RCORE_TOKEN: ${{ secrets.OSCAMP_2026A_RCORE_TOKEN }}
+          STUDENT_GITHUB: ${{ vars.STUDENT_GITHUB }}
+          GRADE_POINTS: ${{ needs.basic-test.outputs.points }}
+        run: python3 -u .github/scripts/rcore_publish.py

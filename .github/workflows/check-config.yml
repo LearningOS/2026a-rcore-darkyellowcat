@@ -1,0 +1,46 @@
+name: Check student configuration
+
+on:
+  push:
+    branches: [ch3, ch4, ch5, ch6, ch8]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  configuration:
+    if: >-
+      github.repository_owner == 'LearningOS' &&
+      github.event.repository.name != '2026a-rcore' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!startsWith(github.event.repository.name, 'preparing-') && vars.STUDENT_GITHUB != ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Check student identity and shared course secret
+        env:
+          STUDENT_GITHUB: ${{ vars.STUDENT_GITHUB }}
+          COURSE_TOKEN: ${{ secrets.OSCAMP_2026A_RCORE_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, '.github/scripts')
+          from rcore_publish import student_login
+          student = os.environ['STUDENT_GITHUB']
+          owner, name = os.environ['GITHUB_REPOSITORY'].split('/', 1)
+          # Preparation must pass before the repository receives its final name.
+          repository = owner + '/' + name.removeprefix('preparing-')
+          student_login(repository, os.environ['GITHUB_REPOSITORY_OWNER'], student, student)
+          if not os.environ.get('COURSE_TOKEN'):
+              sys.exit('Missing organization course secret; contact the maintainer.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'Course: 2073\n\nStudent: {student}\n\n'
+                            'Organization secret is available. No score was uploaded.\n')
+          print('Student mapping and organization secret are configured. No score was uploaded.')
+          PY
