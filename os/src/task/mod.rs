@@ -14,9 +14,9 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -42,7 +42,7 @@ pub struct TaskManager {
 /// Inner of Task Manager
 pub struct TaskManagerInner {
     /// task list
-    tasks: [TaskControlBlock; MAX_APP_NUM],
+    tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
 }
@@ -51,13 +51,13 @@ lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
         let num_app = get_num_app();
-        let mut tasks = [TaskControlBlock {
-            task_cx: TaskContext::zero_init(),
-            task_status: TaskStatus::UnInit,
-        }; MAX_APP_NUM];
-        for (i, task) in tasks.iter_mut().enumerate() {
-            task.task_cx = TaskContext::goto_restore(init_app_cx(i));
-            task.task_status = TaskStatus::Ready;
+        let mut tasks = Vec::with_capacity(num_app);
+        for i in 0..num_app {
+            tasks.push(TaskControlBlock {
+                task_cx: TaskContext::goto_restore(init_app_cx(i)),
+                task_status: TaskStatus::Ready,
+                syscall_counts: [0; 512],
+            });
         }
         TaskManager {
             num_app,
@@ -135,6 +135,38 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn record_syscall(&self, syscall_id: usize) {
+        // TODO:
+        // 1. 获取 TaskManagerInner 的可变访问权限
+        let mut inner = self.inner.exclusive_access();
+        // 2. 获取当前任务编号
+        let current = inner.current_task;
+        // 3. 找到当前任务的 syscall_counts
+        let syscall_counts = &mut inner.tasks[current].syscall_counts;
+        // 4. 将 syscall_id 对应的计数加 1
+        if syscall_id < syscall_counts.len() {
+            syscall_counts[syscall_id] += 1;
+        }
+    }
+
+    fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        // TODO:
+        // 1. 获取 TaskManagerInner
+        let inner = self.inner.exclusive_access();
+        // 2. 获取当前任务编号
+        let current = inner.current_task;
+        // 3. 查询当前任务的 syscall_counts
+        let syscall_counts = &inner.tasks[current].syscall_counts;
+        // 4. 返回调用次数
+        syscall_counts.get(syscall_id).copied().unwrap_or(0)
+    }
+}
+
+/// Returns the number of times the current task has invoked
+/// the syscall identified by `syscall_id`.
+pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
 }
 
 /// Run the first task in task list.
@@ -151,6 +183,13 @@ fn run_next_task() {
 /// Change the status of current `Running` task into `Ready`.
 fn mark_current_suspended() {
     TASK_MANAGER.mark_current_suspended();
+}
+
+/// Record a syscall for the current task.
+pub fn record_syscall(syscall_id: usize) {
+    // TODO: 通过 TASK_MANAGER 调用
+    // TaskManager 的 record_syscall 方法
+    TASK_MANAGER.record_syscall(syscall_id);
 }
 
 /// Change the status of current `Running` task into `Exited`.
