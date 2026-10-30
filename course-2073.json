@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "courseId": 2073,
+  "repository": "LearningOS/2026a-rcore-darkyellowcat",
+  "user": "darkyellowcat",
+  "totalScore": 500,
+  "chapters": {
+    "ch3": {
+      "points": "7/7",
+      "score": 100,
+      "commit": "95634726e86f7bdbdfd348832e12976b5422a1b0"
+    }
+  },
+  "score": 100,
+  "upload": {
+    "status": "pending",
+    "runId": "41075022120",
+    "runAttempt": "1"
+  }
+}
