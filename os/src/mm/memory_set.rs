@@ -40,6 +40,53 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
+    /// 匿名映射 [start_va, end_va)
+    pub fn mmap(&mut self, start_va: VirtAddr, end_va: VirtAddr, perm: MapPermission) -> isize {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        let vpn_range = VPNRange::new(start_vpn, end_vpn);
+
+        // 1. 检查区间内是否已有映射页面
+        for vpn in vpn_range {
+            if let Some(pte) = self.page_table.translate(vpn) {
+                if pte.is_valid() {
+                    return -1;
+                }
+            }
+        }
+
+        // 2. 插入 Framed 逻辑段并完成物理页帧分配与页表映射
+        self.insert_framed_area(start_va, end_va, perm);
+        0
+    }
+
+    /// 取消映射 [start_va, end_va)
+    pub fn munmap(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> isize {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        let vpn_range = VPNRange::new(start_vpn, end_vpn);
+
+        // 1. 先检查区间内所有页面是否均已有效映射
+        for vpn in vpn_range {
+            match self.page_table.translate(vpn) {
+                Some(pte) if pte.is_valid() => {}
+                _ => return -1,
+            }
+        }
+
+        // 2. 逐页解除页表映射并从所属 MapArea 释放物理页帧
+        for vpn in vpn_range {
+            for area in self.areas.iter_mut() {
+                if area.data_frames.contains_key(&vpn) {
+                    area.unmap_one(&mut self.page_table, vpn);
+                    break;
+                }
+            }
+        }
+        // 清理已经没有映射页的空 MapArea
+        self.areas.retain(|area| !area.data_frames.is_empty());
+        0
+    }
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {

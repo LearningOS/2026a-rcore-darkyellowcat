@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -71,6 +72,21 @@ lazy_static! {
 }
 
 impl TaskManager {
+    fn mmap(&self, start: usize, len: usize, perm: MapPermission) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        inner.tasks[current].memory_set.mmap(start_va, end_va, perm)
+    }
+
+    fn munmap(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        inner.tasks[current].memory_set.munmap(start_va, end_va)
+    }
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
@@ -153,6 +169,40 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// 累加当前任务的系统调用计数
+    fn update_current_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_times[syscall_id] += 1;
+    }
+
+    /// 获取当前任务指定系统调用的累计次数
+    fn get_current_syscall_times(&self, syscall_id: usize) -> u32 {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_times[syscall_id]
+    }
+}
+
+/// Increment the syscall counter for the current task.
+pub fn update_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.update_current_syscall_times(syscall_id);
+}
+
+/// Return the syscall count for the current task.
+pub fn get_syscall_times(syscall_id: usize) -> u32 {
+    TASK_MANAGER.get_current_syscall_times(syscall_id)
+}
+
+/// Map anonymous user pages in the current task.
+pub fn current_task_mmap(start: usize, len: usize, perm: MapPermission) -> isize {
+    TASK_MANAGER.mmap(start, len, perm)
+}
+
+/// Unmap user pages in the current task.
+pub fn current_task_munmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.munmap(start, len)
 }
 
 /// Run the first task in task list.
