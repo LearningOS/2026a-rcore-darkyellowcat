@@ -99,7 +99,7 @@ impl PageTable {
                 break;
             }
             if !pte.is_valid() {
-                let frame = frame_alloc().unwrap();
+                let frame = frame_alloc()?;
                 *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
                 self.frames.push(frame);
             }
@@ -132,6 +132,27 @@ impl PageTable {
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
+
+    /// 尝试建立一页映射；页表分配失败或目标页已映射时返回 false。
+    pub fn try_map(
+        &mut self,
+        vpn: VirtPageNum,
+        ppn: PhysPageNum,
+        flags: PTEFlags,
+    ) -> bool {
+        let pte = match self.find_pte_create(vpn) {
+            Some(pte) => pte,
+            None => return false,
+        };
+
+        if pte.is_valid() {
+            return false;
+        }
+
+        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+        true
+    }
+
     /// remove the map between virtual page number and physical page number
     #[allow(unused)]
     pub fn unmap(&mut self, vpn: VirtPageNum) {

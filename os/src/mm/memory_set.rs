@@ -60,6 +60,34 @@ impl MemorySet {
             None,
         );
     }
+
+    /// 尝试建立一个有独立物理页的用户映射。
+    pub fn try_insert_framed_page(
+        &mut self,
+        start_va: VirtAddr,
+        permission: MapPermission,
+    ) -> bool {
+        let end_va = VirtAddr::from(start_va.0 + PAGE_SIZE);
+        let vpn = start_va.floor();
+
+        let frame = match frame_alloc() {
+            Some(frame) => frame,
+            None => return false,
+        };
+
+        let flags = PTEFlags::from_bits(permission.bits).unwrap();
+
+        if !self.page_table.try_map(vpn, frame.ppn, flags) {
+            return false;
+        }
+
+        let mut area = MapArea::new(start_va, end_va, MapType::Framed, permission);
+        area.data_frames.insert(vpn, frame);
+        self.areas.push(area);
+
+        true
+    }
+
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
         if let Some((idx, area)) = self
@@ -264,6 +292,73 @@ impl MemorySet {
     /// Translate a virtual page number to a page table entry
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
+    }
+
+    /// 解除 [start_vpn, end_vpn) 中的用户页映射
+    /// 如果范围内存在未映射页，返回 false。
+    pub fn unmap_user_range(
+        &mut self,
+        start_vpn: VirtPageNum,
+        end_vpn: VirtPageNum,
+    ) -> bool {
+        // 先检查整个范围，确保失败时不会解除一部分映射。
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            let is_user_page = self.page_table.translate(vpn).map_or(false, |pte| {
+                pte.is_valid() && pte.flags().contains(PTEFlags::U)
+            });
+
+            let has_area = self.areas.iter().any(|area| {
+                area.vpn_range.get_start() <= vpn && vpn < area.vpn_range.get_end()
+            });
+
+            if !is_user_page || !has_area {
+                return false;
+            }
+        }
+
+        let old_areas = core::mem::take(&mut self.areas);
+
+        for mut area in old_areas {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+
+            let unmap_start = core::cmp::max(area_start, start_vpn);
+            let unmap_end = core::cmp::min(area_end, end_vpn);
+
+            // 该区域与目标范围没有交集。
+            if unmap_start >= unmap_end {
+                self.areas.push(area);
+                continue;
+            }
+
+            // 仅解除交集中的页。
+            for vpn in VPNRange::new(unmap_start, unmap_end) {
+                area.unmap_one(&mut self.page_table, vpn);
+            }
+
+            // 将右侧保留页的物理页管理信息分离出来。
+            let right_frames = area.data_frames.split_off(&unmap_end);
+
+            if area_start < unmap_start {
+                self.areas.push(MapArea {
+                    vpn_range: VPNRange::new(area_start, unmap_start),
+                    data_frames: area.data_frames,
+                    map_type: area.map_type,
+                    map_perm: area.map_perm,
+                });
+            }
+
+            if unmap_end < area_end {
+                self.areas.push(MapArea {
+                    vpn_range: VPNRange::new(unmap_end, area_end),
+                    data_frames: right_frames,
+                    map_type: area.map_type,
+                    map_perm: area.map_perm,
+                });
+            }
+        }
+
+        true
     }
 
     ///Remove all `MapArea`

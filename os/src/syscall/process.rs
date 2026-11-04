@@ -3,12 +3,15 @@ use alloc::sync::Arc;
 
 use crate::{
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, translated_byte_buffer, MapPermission, VirtAddr, },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, TaskControlBlock,
     },
+    timer::get_time_us,
+    config::PAGE_SIZE,
 };
+use crate::mm::VirtPageNum;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -67,7 +70,11 @@ pub fn sys_exec(path: *const u8) -> isize {
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    trace!("kernel::pid[{}] sys_waitpid [{}]", current_task().unwrap().pid.0, pid);
+    trace!(
+        "kernel::pid[{}] sys_waitpid [{}]",
+        current_task().unwrap().pid.0,
+        pid
+    );
     let task = current_task().unwrap();
     // find a child process
 
@@ -106,29 +113,101 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let time_us = get_time_us();
+    let time_val = TimeVal {
+        sec: time_us / 1_000_000,
+        usec: time_us % 1_000_000,
+    };
+
+    let mut bytes = [0u8; core::mem::size_of::<TimeVal>()];
+    let word_size = core::mem::size_of::<usize>();
+    bytes[..word_size].copy_from_slice(&time_val.sec.to_le_bytes());
+    bytes[word_size..].copy_from_slice(&time_val.usec.to_le_bytes());
+
+    let buffers =
+        translated_byte_buffer(current_user_token(), _ts as * const u8, bytes.len());
+
+    let mut offset = 0;
+    for buffer in buffers {
+        let len = buffer.len();
+        buffer.copy_from_slice(&bytes[offset..offset + len]);
+        offset += len;
+    }
+
+    0
 }
 
 /// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
+    if start % PAGE_SIZE != 0 || port & !0x7 != 0 || port & 0x7 == 0 {
+        return -1;
+    }
+
+    if len  == 0 {
+        return 0;
+    }
+
+    let end = match start.checked_add(len) {
+        Some(end) => end,
+        None => return -1,
+    };
+
+    if end > (1usize << 38) {
+        return -1;
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let memory_set = &mut inner.memory_set;
+
+    let first_page = start / PAGE_SIZE;
+    let last_page = (end + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    for page in first_page..last_page {
+        let addr = VirtAddr::from(page * PAGE_SIZE);
+        if memory_set.translate(addr.floor()).map_or(false, |pte| pte.is_valid()) {
+            return -1;
+        }
+    }
+
+    let perm = MapPermission::from_bits((port << 1) as u8).unwrap() | MapPermission::U;
+
+    for page in first_page..last_page {
+        let page_start = page * PAGE_SIZE;
+        if !memory_set.try_insert_framed_page(VirtAddr::from(page_start), perm) {
+            return -1;
+        }
+    }
+
+    0
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    if _start % PAGE_SIZE != 0 || _len == 0 {
+        return -1;
+    }
+
+    let end = match _start.checked_add(_len) {
+        Some(end) => end,
+        None => return -1,
+    };
+
+    if end > (1usize << 38) {
+        return -1;
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+
+    let start_vpn = VirtPageNum::from(_start / PAGE_SIZE);
+    let end_vpn = VirtPageNum::from((end - 1) / PAGE_SIZE + 1);
+
+    if inner.memory_set.unmap_user_range(start_vpn, end_vpn){
+        0
+    } else {
+        -1
+    }
 }
 
 /// change data segment size
@@ -143,19 +222,56 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_spawn(path: *const u8) -> isize {
+    // 1. 获取当前进程的页表
+    let token = current_user_token();
+
+    // 2. 从用户地址空间读取程序名称
+    let path = translated_str(token, path);
+
+    // 3. 查找目标程序的 ELF 数据
+    let elf_data = match get_app_data_by_name(path.as_str()) {
+        Some(data) => data,
+        None => return -1,
+    };
+
+    // 4. 获取父进程
+    let parent = current_task().unwrap();
+
+    // 5. 直接创建子进程
+    let child = Arc::new(TaskControlBlock::new(elf_data));
+    let child_pid = child.getpid();
+
+    // 设置 child 的 parent 字段
+    {
+        let mut child_inner = child.inner_exclusive_access();
+        child_inner.parent = Some(Arc::downgrade(&parent));
+    }
+
+    // 将 child 加入 parent 的 children 集合
+    {
+        let mut parent_inner = parent.inner_exclusive_access();
+        parent_inner.children.push(child.clone());
+    }
+
+    // 将 child 加入调度器
+    add_task(child);
+
+    child_pid as isize
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_set_priority(prio: isize) -> isize {
+    
+    if prio < 2 {
+        return -1;
+    };
+
+    let task = current_task().unwrap();
+
+    {
+        let mut inner = task.inner_exclusive_access();
+        inner.priority = prio as usize;
+    }
+    prio
 }
