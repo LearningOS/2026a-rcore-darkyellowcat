@@ -97,9 +97,7 @@ impl TaskControlBlockInner {
 }
 
 impl TaskControlBlock {
-    /// Create a new process
-    ///
-    /// At present, it is only used for the creation of initproc
+    /// Create a new process from ELF data.
     pub fn new(elf_data: &[u8]) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);

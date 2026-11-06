@@ -1,6 +1,7 @@
 //! File and filesystem-related syscalls
-use crate::fs::{open_file, OpenFlags, Stat};
-use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
+use crate::config::PAGE_SIZE;
+use crate::fs::{link_file, open_file, unlink_file, OpenFlags, Stat};
+use crate::mm::{translated_byte_buffer, translated_str, UserBuffer, VirtAddr};
 use crate::task::{current_task, current_user_token};
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
@@ -75,29 +76,68 @@ pub fn sys_close(fd: usize) -> isize {
     0
 }
 
-/// YOUR JOB: Implement fstat.
-pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Read file metadata and copy it to a writable user buffer.
+pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
+    let token = current_user_token();
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    let file = match inner.fd_table.get(fd).and_then(|entry| entry.as_ref()) {
+        Some(file) => file.clone(),
+        None => return -1,
+    };
+    let start = st as usize;
+    let end = match start.checked_add(core::mem::size_of::<Stat>()) {
+        Some(end) if start != 0 && end <= (1usize << 38) => end,
+        _ => return -1,
+    };
+    for page in start / PAGE_SIZE..(end - 1) / PAGE_SIZE + 1 {
+        let pte = inner
+            .memory_set
+            .translate(VirtAddr::from(page * PAGE_SIZE).floor());
+        if !pte.map_or(false, |pte| {
+            pte.is_valid() && pte.is_user() && pte.readable() && pte.writable()
+        }) {
+            return -1;
+        }
+    }
+    drop(inner);
+    let stat = match file.stat() {
+        Some(stat) => stat,
+        None => return -1,
+    };
+
+    let mut bytes = [0u8; core::mem::size_of::<Stat>()];
+    bytes[..8].copy_from_slice(&stat.dev.to_le_bytes());
+    bytes[8..16].copy_from_slice(&stat.ino.to_le_bytes());
+    bytes[16..20].copy_from_slice(&stat.mode.bits().to_le_bytes());
+    bytes[20..24].copy_from_slice(&stat.nlink.to_le_bytes());
+    let mut offset = 0;
+    for buffer in translated_byte_buffer(token, st as *const u8, bytes.len()) {
+        let end = offset + buffer.len();
+        buffer.copy_from_slice(&bytes[offset..end]);
+        offset = end;
+    }
+    0
 }
 
-/// YOUR JOB: Implement linkat.
-pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Add a directory name referring to the same inode as the old name.
+pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
+    let token = current_user_token();
+    let old_name = translated_str(token, old_name);
+    let new_name = translated_str(token, new_name);
+    if link_file(old_name.as_str(), new_name.as_str()) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement unlinkat.
-pub fn sys_unlinkat(_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Remove one directory name and reclaim the file when no links or opens remain.
+pub fn sys_unlinkat(name: *const u8) -> isize {
+    let name = translated_str(current_user_token(), name);
+    if unlink_file(name.as_str()) {
+        0
+    } else {
+        -1
+    }
 }

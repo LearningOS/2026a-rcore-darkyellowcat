@@ -8,7 +8,7 @@ const EFS_MAGIC: u32 = 0x3b800001;
 /// The max number of direct inodes
 const INODE_DIRECT_COUNT: usize = 28;
 /// The max length of inode name
-const NAME_LENGTH_LIMIT: usize = 27;
+pub(crate) const NAME_LENGTH_LIMIT: usize = 27;
 /// The max number of indirect1 inodes
 const INODE_INDIRECT1_COUNT: usize = BLOCK_SZ / 4;
 /// The max number of indirect2 inodes

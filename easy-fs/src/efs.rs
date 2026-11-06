@@ -3,6 +3,7 @@ use super::{
     SuperBlock,
 };
 use crate::BLOCK_SZ;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use spin::Mutex;
 ///An easy file system on block
@@ -15,6 +16,8 @@ pub struct EasyFileSystem {
     pub data_bitmap: Bitmap,
     inode_area_start_block: u32,
     data_area_start_block: u32,
+    /// Live open file descriptions, separate from on-disk directory links.
+    pub(crate) open_inodes: BTreeMap<u32, usize>,
 }
 
 type DataBlock = [u8; BLOCK_SZ];
@@ -45,6 +48,7 @@ impl EasyFileSystem {
             data_bitmap,
             inode_area_start_block: 1 + inode_bitmap_blocks,
             data_area_start_block: 1 + inode_total_blocks + data_bitmap_blocks,
+            open_inodes: BTreeMap::new(),
         };
         // clear all blocks
         for i in 0..total_blocks {
@@ -99,6 +103,7 @@ impl EasyFileSystem {
                     ),
                     inode_area_start_block: 1 + super_block.inode_bitmap_blocks,
                     data_area_start_block: 1 + inode_total_blocks + super_block.data_bitmap_blocks,
+                    open_inodes: BTreeMap::new(),
                 };
                 Arc::new(Mutex::new(efs))
             })
@@ -121,6 +126,12 @@ impl EasyFileSystem {
             (inode_id % inodes_per_block) as usize * inode_size,
         )
     }
+    /// Recover an inode number from its location in the inode area.
+    pub fn get_disk_inode_id(&self, block_id: u32, block_offset: usize) -> u32 {
+        let inode_size = core::mem::size_of::<DiskInode>();
+        (block_id - self.inode_area_start_block) * (BLOCK_SZ / inode_size) as u32
+            + (block_offset / inode_size) as u32
+    }
     /// Get data block by id
     pub fn get_data_block_id(&self, data_block_id: u32) -> u32 {
         self.data_area_start_block + data_block_id
@@ -128,6 +139,24 @@ impl EasyFileSystem {
     /// Allocate a new inode
     pub fn alloc_inode(&mut self) -> u32 {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
+    }
+
+    /// Reclaim an unlinked, unopened inode and all its data and index blocks.
+    pub(crate) fn dealloc_inode(&mut self, inode_id: u32) {
+        let (block_id, block_offset) = self.get_disk_inode_pos(inode_id);
+        let blocks = get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(block_offset, |inode: &mut DiskInode| {
+                let size = inode.size;
+                let blocks = inode.clear_size(&self.block_device);
+                assert_eq!(blocks.len(), DiskInode::total_blocks(size) as usize);
+                blocks
+            });
+        for block in blocks {
+            self.dealloc_data(block);
+        }
+        self.inode_bitmap
+            .dealloc(&self.block_device, inode_id as usize);
     }
 
     /// Allocate a data block

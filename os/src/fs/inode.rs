@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -31,6 +31,7 @@ pub struct OSInodeInner {
 impl OSInode {
     /// create a new inode in memory
     pub fn new(readable: bool, writable: bool, inode: Arc<Inode>) -> Self {
+        inode.open();
         Self {
             readable,
             writable,
@@ -101,6 +102,16 @@ impl OpenFlags {
     }
 }
 
+/// Add a root-directory hard link to an existing file.
+pub fn link_file(old_name: &str, new_name: &str) -> bool {
+    ROOT_INODE.link(old_name, new_name)
+}
+
+/// Remove a root-directory name while respecting live open descriptions.
+pub fn unlink_file(name: &str) -> bool {
+    ROOT_INODE.unlink(name)
+}
+
 /// Open a file
 pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     let (readable, writable) = flags.read_write();
@@ -125,7 +136,27 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+impl Drop for OSInode {
+    fn drop(&mut self) {
+        self.inner.exclusive_access().inode.close();
+    }
+}
+
 impl File for OSInode {
+    fn stat(&self) -> Option<Stat> {
+        let metadata = self.inner.exclusive_access().inode.stat();
+        Some(Stat {
+            dev: 0,
+            ino: metadata.inode_id as u64,
+            mode: if metadata.is_dir {
+                StatMode::DIR
+            } else {
+                StatMode::FILE
+            },
+            nlink: metadata.nlink,
+            pad: [0; 7],
+        })
+    }
     fn readable(&self) -> bool {
         self.readable
     }
